@@ -1,0 +1,259 @@
+# Jolly config. Run /jolly reload after editing.
+# Every way of earning jolliness has its own "enabled:" switch under "gains:".
+config-version: 3
+
+max-jolliness: 1000000
+ignore-creative: true          # creative players earn nothing
+give-hat-on-first-join: false
+
+death:
+  keep-jolliness: true         # false = dying resets jolliness to 0
+  destroy-hat: false           # true = the hat is deleted from the death drops
+  give-hat-on-respawn: false   # true = a new hat (at your current tier) comes back on respawn
+
+recipe:
+  enabled: true
+  discover-on-join: true
+  shape: ["SWS", "RDR", "GEG"]
+  ingredients:
+    S: SNOW_BLOCK
+    W: WHITE_WOOL
+    R: RED_WOOL
+    D: DIAMOND
+    G: GOLD_INGOT
+    E: EMERALD
+  # A crafted hat always comes out at the crafter's current tier.
+
+# <name> <jolly> <tier> <tiercolor>...</tiercolor>   (MiniMessage)
+tablist:
+  enabled: true
+  format: "<name> <tiercolor>[<jolly>]</tiercolor>"
+
+actionbar:
+  enabled: true                            # shown only while the hat is worn
+  format: "<gold>Jolliness: <tiercolor><jolly></tiercolor> <gray>(tier <tier>, next: <next>)</gray>"
+
+# true  = 3D hat from the resource pack, drawn on the head (the item model is shown instead of the armor layer)
+# false = plain red leather helmet look (no resource pack needed)
+hat-display:
+  enabled: true
+
+sounds:
+  gain:                        # played to the player whenever they gain jolliness
+    enabled: true
+    sound: "minecraft:block.amethyst_block.chime"
+    volume: 0.5
+    pitch: 1.6
+    min-gap-ticks: 8           # so walking/mining doesn't stack the sound
+  tier-up:
+    enabled: true
+    sound: "minecraft:ui.toast.challenge_complete"
+    volume: 1.0
+    pitch: 1.0
+    everyone: true             # false = only the player who tiered up hears it
+
+announce:
+  enabled: true                # server-wide message when someone tiers up
+  message: "<gold><player> reached Jolly Tier <tiercolor><tier></tiercolor>!</gold>"
+
+gains:
+  walking:
+    enabled: true
+    blocks-per-point: 10
+    points: 1
+    snow-multiplier: 2.0
+    snow-biomes: [snowy_plains, snowy_taiga, snowy_beach, snowy_slopes, frozen_peaks, jagged_peaks, grove, ice_spikes, frozen_river, frozen_ocean, deep_frozen_ocean]
+  mining:
+    enabled: true
+    points:       # naturally generated ore only (player-placed ore is ignored)
+      COAL_ORE: 1
+      DEEPSLATE_COAL_ORE: 1
+      COPPER_ORE: 1
+      DEEPSLATE_COPPER_ORE: 1
+      IRON_ORE: 2
+      DEEPSLATE_IRON_ORE: 2
+      GOLD_ORE: 2
+      DEEPSLATE_GOLD_ORE: 2
+      NETHER_GOLD_ORE: 1
+      REDSTONE_ORE: 2
+      DEEPSLATE_REDSTONE_ORE: 2
+      LAPIS_ORE: 2
+      DEEPSLATE_LAPIS_ORE: 2
+      NETHER_QUARTZ_ORE: 1
+      DIAMOND_ORE: 5
+      DEEPSLATE_DIAMOND_ORE: 5
+      EMERALD_ORE: 5
+      DEEPSLATE_EMERALD_ORE: 5
+      ANCIENT_DEBRIS: 10
+  placing-rare:
+    enabled: true
+    once-per-position: true    # breaking and re-placing the same spot doesn't pay again
+    points:
+      BEACON: 10
+      CONDUIT: 8
+      NETHERITE_BLOCK: 8
+      DIAMOND_BLOCK: 5
+      EMERALD_BLOCK: 5
+      GOLD_BLOCK: 3
+      LODESTONE: 4
+      RESPAWN_ANCHOR: 4
+      ENCHANTING_TABLE: 3
+      ENDER_CHEST: 2
+      DRAGON_EGG: 15
+  decorating:
+    enabled: true              # festive blocks; same once-per-position rule as above
+    points:
+      SPRUCE_SAPLING: 1
+      RED_CANDLE: 1
+      GREEN_CANDLE: 1
+      WHITE_CANDLE: 1
+      LANTERN: 1
+      SOUL_LANTERN: 1
+      CAKE: 2
+  breeding:
+    enabled: true
+    points: 3
+    cooldown-seconds: 2
+  snowballs:
+    enabled: true              # hit another creature with a snowball
+    points: 1
+    cooldown-seconds: 3
+  trading:
+    enabled: true              # complete a villager trade
+    points: 2
+    cooldown-seconds: 5
+  festive-food:
+    enabled: true
+    cooldown-seconds: 10
+    points:
+      COOKIE: 1
+      PUMPKIN_PIE: 2
+      HONEY_BOTTLE: 1
+      SWEET_BERRIES: 1
+  fishing:
+    enabled: true
+    points: 1
+  advancements:
+    enabled: true              # any advancement with a visible toast (not recipes)
+    points: 5
+  playtime:
+    enabled: true
+    minutes: 5                 # every N minutes with the hat on
+    points: 1
+  mob-kills:
+    enabled: false             # off by default: mob farms make it easy to inflate
+    points: 1                  # any hostile mob
+    boss-points:
+      ENDER_DRAGON: 25
+      WITHER: 25
+      WARDEN: 25
+      ELDER_GUARDIAN: 10
+  gifting:
+    enabled: true
+    points: 3                  # awarded to the giver when someone picks up their dropped item
+    pair-cooldown-seconds: 300
+  chat:
+    enabled: true
+    points: 5
+    cooldown-seconds: 60
+    phrases: ["merry christmas", "happy holidays", "ho ho ho"]
+
+# Tier colors ("color") are used for the pom pom in chat/tab/actionbar/announcements.
+# The in-game pom pom tint comes from the resource pack (assets/jolly/items/santa_hat_<tier>.json).
+# Tier 1 gray, 2 green, 3 blue, 4 purple, 5 yellow, 6 red (max).
+# armor/toughness are the helmet's TOTAL values (leather helmet = 1 armor, diamond = 3 armor + 2 toughness).
+# effects: vanilla effect id -> amplifier (0 = level I). Effects stack upward through tiers.
+# bonus-drops: chance per natural ore broken, then a weighted roll on the table.
+tiers:
+  "1":
+    threshold: 0
+    color: "#9E9E9E"
+    max-durability: 55
+    armor: 1.0
+    toughness: 0.0
+    unbreaking: 0
+    glint: false
+    snow-trail: false
+    effects: {}
+    bonus-drops: { chance: 0.0, amount: 1, table: {} }
+  "2":
+    threshold: 100
+    color: "#3DD13D"
+    max-durability: 120
+    armor: 1.5
+    toughness: 0.5
+    unbreaking: 1
+    glint: false
+    snow-trail: false
+    effects: { speed: 0 }
+    bonus-drops: { chance: 0.0, amount: 1, table: {} }
+  "3":
+    threshold: 250
+    color: "#3D7BFF"
+    max-durability: 200
+    armor: 2.0
+    toughness: 1.0
+    unbreaking: 2
+    glint: false
+    snow-trail: false
+    effects: { luck: 0 }
+    bonus-drops:
+      chance: 0.02
+      amount: 1
+      table: { COAL: 50, RAW_COPPER: 30, RAW_IRON: 20 }
+  "4":
+    threshold: 500
+    color: "#A43DFF"
+    max-durability: 280
+    armor: 2.5
+    toughness: 1.5
+    unbreaking: 3
+    glint: false
+    snow-trail: true          # snowflake trail while moving (this tier and above)
+    effects: { hero_of_the_village: 0 }
+    bonus-drops:
+      chance: 0.04
+      amount: 1
+      table: { COAL: 40, RAW_COPPER: 25, RAW_IRON: 15, RAW_GOLD: 12, LAPIS_LAZULI: 8 }
+  "5":
+    threshold: 1000
+    color: "#FFD92E"
+    max-durability: 363
+    armor: 3.0
+    toughness: 2.0
+    unbreaking: 3
+    glint: true
+    snow-trail: true
+    effects: { regeneration: 0 }
+    bonus-drops:
+      chance: 0.07
+      amount: 1
+      table:
+        COAL: 30
+        RAW_COPPER: 20
+        RAW_GOLD: 15
+        RAW_IRON: 15
+        LAPIS_LAZULI: 12.5
+        DIAMOND: 7.5
+        NETHERITE_INGOT: 0.5
+  "6":
+    threshold: 2500
+    color: "#FF3030"
+    max-durability: 407
+    armor: 3.0
+    toughness: 3.0
+    unbreaking: 3
+    glint: true
+    snow-trail: true
+    effects: { resistance: 0 }
+    bonus-drops:
+      chance: 0.10
+      amount: 1
+      table:
+        COAL: 25
+        RAW_COPPER: 15
+        RAW_GOLD: 15
+        RAW_IRON: 15
+        LAPIS_LAZULI: 12
+        DIAMOND: 15
+        NETHERITE_INGOT: 2

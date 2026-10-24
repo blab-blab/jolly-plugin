@@ -1,0 +1,11 @@
+name: Jolly
+version: 3.0
+main: dev.jolly.JollyPlugin
+api-version: "26.3"
+commands:
+  jolly:
+    description: Jolliness counter
+    usage: /jolly [add|set|get|give|reload]
+permissions:
+  jolly.admin:
+    default: op
