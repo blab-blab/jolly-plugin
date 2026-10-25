@@ -89,7 +89,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
 
     // cached config
     private int maxJolly;
-    private boolean ignoreCreative, giveFirstJoin, recipeDiscover;
+    private boolean ignoreCreative, giveFirstJoin, recipeDiscover, requireHat;
     private boolean keepJolly, destroyHat, hatOnRespawn;
     private boolean tabEnabled, barEnabled, displayEnabled;
     private String tabFormat, barFormat;
@@ -155,6 +155,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         FileConfiguration c = getConfig();
         maxJolly = c.getInt("max-jolliness", 1_000_000);
         ignoreCreative = c.getBoolean("ignore-creative", true);
+        requireHat = c.getBoolean("require-hat", false);
         giveFirstJoin = c.getBoolean("give-hat-on-first-join", false);
         recipeDiscover = c.getBoolean("recipe.discover-on-join", true);
 
@@ -381,13 +382,13 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         p.playSound(p.getLocation(), gainSound, SoundCategory.PLAYERS, gainVol, gainPitch);
     }
 
-    /** True if this player may earn right now: hat on, not (ignored) creative. */
+    /** True if this player may earn right now: hat on (if require-hat), not (ignored) creative. */
     private boolean canEarn(Player p) {
-        if (tiers.isEmpty() || !wearing(p)) return false;
+        if (tiers.isEmpty() || (requireHat && !wearing(p))) return false;
         return !(ignoreCreative && p.getGameMode() == GameMode.CREATIVE);
     }
 
-    /** Points only count while the hat is on (and not creative, if configured). */
+    /** Points count with or without the hat (see require-hat), and not in creative if configured. */
     private void add(Player p, int n) {
         if (n <= 0 || !canEarn(p)) return;
         boolean tieredUp = set(p, get(p) + n);
@@ -517,7 +518,11 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         if (tiers.isEmpty()) return;
         for (Player p : Bukkit.getOnlinePlayers()) {
             refreshAllHats(p);
-            if (!wearing(p)) continue;
+            if (playOn && canEarn(p)) {
+                int s = playSecs.merge(p.getUniqueId(), 1, Integer::sum);
+                if (s >= playMinutes * 60) { playSecs.put(p.getUniqueId(), 0); add(p, playPts); }
+            }
+            if (!wearing(p)) continue; // buffs and the action bar are hat-only
             int j = get(p);
             int t = tierIdx(j);
             effectsFor(t).forEach((type, amp) ->
@@ -529,10 +534,6 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
                         Placeholder.unparsed("tier", String.valueOf(t + 1)),
                         Placeholder.unparsed("next", next),
                         tierColor(t)));
-            }
-            if (playOn) {
-                int s = playSecs.merge(p.getUniqueId(), 1, Integer::sum);
-                if (s >= playMinutes * 60) { playSecs.put(p.getUniqueId(), 0); add(p, playPts); }
             }
         }
     }
@@ -558,7 +559,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         Player p = e.getPlayer();
         UUID id = p.getUniqueId();
         lastMove.put(id, Bukkit.getCurrentTick());
-        if (!walkEnabled || d > 2 || p.isInsideVehicle() || p.isGliding() || !wearing(p)) return;
+        if (!walkEnabled || d > 2 || p.isInsideVehicle() || p.isGliding() || !canEarn(p)) return;
 
         double dist = walkDist.merge(id, d, Double::sum);
         if (dist < 1) return;
@@ -638,7 +639,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         if (!canEarn(p)) return;
 
         if (mineEnabled) add(p, minePoints.getOrDefault(type, 0));
-        rollBonus(p, b);
+        if (wearing(p)) rollBonus(p, b); // bonus drops are a hat perk
     }
 
     private void rollBonus(Player p, Block b) {
@@ -773,7 +774,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
             int j = get(p), t = tierIdx(j);
             String next = t + 1 < tiers.size() ? "next tier at " + fmt(tiers.get(t + 1).threshold()) : "max tier";
             p.sendMessage(Component.text("Jolliness: " + fmt(j) + " (tier " + (t + 1) + ", " + next + ")", NamedTextColor.GOLD));
-            if (!wearing(p)) p.sendMessage(Component.text("Wear your Santa Hat to earn more.", NamedTextColor.GRAY));
+            if (requireHat && !wearing(p)) p.sendMessage(Component.text("Wear your Santa Hat to earn more.", NamedTextColor.GRAY));
             return true;
         }
         if (!s.hasPermission("jolly.admin")) { s.sendMessage("No permission."); return true; }
