@@ -4,6 +4,7 @@ config-version: 3
 
 max-jolliness: 1000000
 ignore-creative: true          # creative players earn nothing
+require-hat: false      
 give-hat-on-first-join: false
 
 death:
