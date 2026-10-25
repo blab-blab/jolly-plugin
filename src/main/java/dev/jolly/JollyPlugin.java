@@ -15,35 +15,49 @@ import org.bukkit.*;
 import org.bukkit.attribute.Attribute;
 import org.bukkit.attribute.AttributeModifier;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabExecutor;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.enchantments.Enchantment;
+import org.bukkit.entity.Boat;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Monster;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
 import org.bukkit.entity.Snowball;
+import org.bukkit.entity.TNTPrimed;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BellRingEvent;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.entity.CreatureSpawnEvent;
 import org.bukkit.event.entity.EntityBreedEvent;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.entity.ProjectileHitEvent;
+import org.bukkit.event.entity.ProjectileLaunchEvent;
+import org.bukkit.event.inventory.InventoryClickEvent;
+import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.inventory.PrepareItemCraftEvent;
 import org.bukkit.event.player.PlayerAdvancementDoneEvent;
 import org.bukkit.event.player.PlayerFishEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerItemConsumeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.vehicle.VehicleMoveEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.EquipmentSlotGroup;
 import org.bukkit.inventory.ItemStack;
@@ -56,6 +70,7 @@ import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
+import org.bukkit.util.Vector;
 
 import java.io.File;
 import java.util.*;
@@ -63,20 +78,41 @@ import java.util.concurrent.ThreadLocalRandom;
 
 public final class JollyPlugin extends JavaPlugin implements Listener, TabExecutor {
 
-    private static final int CONFIG_VERSION = 3;
+    private static final int CONFIG_VERSION = 5;
     /** Bump when the hat item's components change so old hats get rewritten. */
     private static final int HAT_VERSION = 3;
 
-    record Drop(Material mat, double weight) {}
-
     record Tier(int threshold, String color, int maxDura, double armor, double tough, int unbreaking,
-                boolean glint, boolean snow, double bonusChance, int bonusAmount,
-                List<Drop> table, double totalWeight, Map<PotionEffectType, Integer> effects) {}
+                boolean glint, double dupChance, Map<PotionEffectType, Integer> effects) {}
+
+    /** A selectable particle style. Behaviour lives in renderStyle(); the unlock tier comes from config. */
+    record Style(String id, String name, int defaultTier) {}
+
+    /** A player-vs-player kill worked out from the victim's last damage. */
+    record PvpKill(Player killer, String method, Component weapon) {}
+
+    private static final List<Style> STYLES = List.of(
+            new Style("snow", "Snow Trail", 2),
+            new Style("snow_glow", "Snow Glow", 3),
+            new Style("candy_cane", "Candy Cane", 3),
+            new Style("holly", "Holly", 4),
+            new Style("snow_aura", "Snow Aura", 4),
+            new Style("starlight", "Starlight", 5),
+            new Style("aurora", "Aurora Halo", 5),
+            new Style("crown", "Frost Crown", 6));
+
+    private static final Particle.DustOptions DUST_RED = new Particle.DustOptions(Color.fromRGB(225, 35, 35), 1.1f);
+    private static final Particle.DustOptions DUST_WHITE = new Particle.DustOptions(Color.fromRGB(250, 250, 250), 1.1f);
+    private static final Particle.DustOptions DUST_GREEN = new Particle.DustOptions(Color.fromRGB(35, 190, 60), 1.1f);
+    private static final Color[] AURORA = {
+            Color.fromRGB(80, 255, 150), Color.fromRGB(60, 220, 255),
+            Color.fromRGB(100, 120, 255), Color.fromRGB(190, 90, 255)};
+    private static final float[] JINGLE_PITCHES = {1.2f, 1.5f, 1.8f, 2.0f};
 
     private static final MiniMessage MM = MiniMessage.miniMessage();
 
     private final List<Tier> tiers = new ArrayList<>();
-    private NamespacedKey JOLLY, HAT, HAT_TIER, HAT_VER, GIVEN, PLACED, AWARDED, RECIPE, M_ARMOR, M_TOUGH;
+    private NamespacedKey JOLLY, HAT, HAT_TIER, HAT_VER, GIVEN, PLACED, AWARDED, RECIPE, M_ARMOR, M_TOUGH, PARTICLE, JINGLE, DISCS;
 
     // runtime state
     private final Map<UUID, Double> walkDist = new HashMap<>();
@@ -86,13 +122,35 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
     private final Map<UUID, Integer> playSecs = new HashMap<>();
     private final Map<String, Long> cooldowns = new HashMap<>();
     private final Set<UUID> needsHat = new HashSet<>();
+    private final Map<UUID, Integer> jingleTick = new HashMap<>();
+    private final Map<UUID, Integer> passiveSecs = new HashMap<>();
+    private final Map<UUID, Integer> pumpkinUse = new HashMap<>();
+    private final Map<Snowball, Location> candyBalls = new HashMap<>();
 
     // cached config
     private int maxJolly;
     private boolean ignoreCreative, giveFirstJoin, recipeDiscover, requireHat;
     private boolean keepJolly, destroyHat, hatOnRespawn;
-    private boolean tabEnabled, barEnabled, displayEnabled;
-    private String tabFormat, barFormat;
+    private boolean tabEnabled, displayEnabled;
+    private String tabFormat;
+
+    private final Set<Material> dupExclude = EnumSet.noneOf(Material.class);
+    private final Map<String, Integer> styleTier = new LinkedHashMap<>();
+    private String defaultStyle = "snow";
+    private boolean jingleOn, jingleDefault, burstOn, cheerOn;
+    private int jingleMinTier, cheerRadius;
+    private String jingleSound, cheerMsg;
+    private float jingleVol;
+    private long cheerCdMs;
+
+    private boolean passiveOn, iceBoatOn, snowmanOn, bellOn, discOn, pvpOn, candyOn, knockOn;
+    private int passiveSecsNeeded, passivePts, snowmanPts, bellPts, pvpPenalty, candyTier, knockTier;
+    private double iceMult, knockStrength, knockLift;
+    private long snowmanCd, bellCd;
+    private String pvpMessage;
+    private final Set<Material> iceBlocks = EnumSet.noneOf(Material.class);
+    private final Map<Material, Integer> discPoints = new EnumMap<>(Material.class);
+    private final Map<String, String> pvpVerbs = new HashMap<>();
 
     private boolean gainSoundOn, tierSoundOn, tierSoundAll, announceOn;
     private String gainSound, tierSound, announceMsg;
@@ -141,6 +199,9 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         RECIPE = new NamespacedKey(this, "santa_hat_recipe");
         M_ARMOR = new NamespacedKey(this, "hat_armor");
         M_TOUGH = new NamespacedKey(this, "hat_tough");
+        PARTICLE = new NamespacedKey(this, "particle");
+        JINGLE = new NamespacedKey(this, "jingle");
+        DISCS = new NamespacedKey(this, "discs");
 
         Bukkit.getPluginManager().registerEvents(this, this);
         getCommand("jolly").setExecutor(this);
@@ -165,9 +226,30 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
 
         tabEnabled = c.getBoolean("tablist.enabled", true);
         tabFormat = c.getString("tablist.format", "<name> <tiercolor>[<jolly>]</tiercolor>");
-        barEnabled = c.getBoolean("actionbar.enabled", true);
-        barFormat = c.getString("actionbar.format", "<gold>Jolliness: <tiercolor><jolly></tiercolor>");
         displayEnabled = c.getBoolean("hat-display.enabled", true);
+
+        dupExclude.clear();
+        List<String> ex = c.contains("ore-duplication.exclude")
+                ? c.getStringList("ore-duplication.exclude") : List.of("ANCIENT_DEBRIS", "NETHERITE_SCRAP");
+        for (String n : ex) {
+            Material m = Material.matchMaterial(n);
+            if (m == null) getLogger().warning("Unknown material in ore-duplication.exclude: " + n);
+            else dupExclude.add(m);
+        }
+
+        styleTier.clear();
+        for (Style st : STYLES) styleTier.put(st.id(), c.getInt("particles.unlock-tiers." + st.id(), st.defaultTier()));
+        defaultStyle = c.getString("particles.default", "snow").toLowerCase(Locale.ROOT);
+        jingleOn = c.getBoolean("jingle.enabled", true);
+        jingleMinTier = c.getInt("jingle.unlock-tier", 3);
+        jingleDefault = c.getBoolean("jingle.default-on", false);
+        jingleSound = c.getString("jingle.sound", "minecraft:block.note_block.chime");
+        jingleVol = (float) c.getDouble("jingle.volume", 0.25);
+        cheerOn = c.getBoolean("cheer.enabled", true);
+        cheerCdMs = c.getLong("cheer.cooldown-seconds", 30) * 1000L;
+        cheerRadius = c.getInt("cheer.radius", 24);
+        cheerMsg = c.getString("cheer.message", "<tiercolor><player> cheers!</tiercolor>");
+        burstOn = c.getBoolean("tier-up-burst.enabled", true);
 
         gainSoundOn = c.getBoolean("sounds.gain.enabled", true);
         gainSound = c.getString("sounds.gain.sound", "minecraft:block.amethyst_block.chime");
@@ -225,6 +307,42 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
             catch (IllegalArgumentException ex) { getLogger().warning("Unknown entity in mob-kills.boss-points: " + k); }
         }
 
+        passiveOn = c.getBoolean("gains.passive.enabled", true);
+        passiveSecsNeeded = Math.max(1, c.getInt("gains.passive.seconds", 60));
+        passivePts = c.getInt("gains.passive.points", 1);
+        iceBoatOn = c.getBoolean("gains.ice-boating.enabled", true);
+        iceMult = c.getDouble("gains.ice-boating.multiplier", 2.0);
+        iceBlocks.clear();
+        for (String n : c.getStringList("gains.ice-boating.blocks")) {
+            Material m = Material.matchMaterial(n);
+            if (m == null) getLogger().warning("Unknown material in ice-boating.blocks: " + n);
+            else iceBlocks.add(m);
+        }
+        snowmanOn = c.getBoolean("gains.snowmen.enabled", true);
+        snowmanPts = c.getInt("gains.snowmen.points", 20);
+        snowmanCd = c.getLong("gains.snowmen.cooldown-seconds", 60) * 1000L;
+        bellOn = c.getBoolean("gains.bells.enabled", true);
+        bellPts = c.getInt("gains.bells.points", 5);
+        bellCd = c.getLong("gains.bells.cooldown-seconds", 60) * 1000L;
+        discOn = c.getBoolean("gains.music-discs.enabled", true);
+        readMaterials(c.getConfigurationSection("gains.music-discs.points"), discPoints, "music-discs.points");
+
+        pvpOn = c.getBoolean("death.pvp.enabled", true);
+        pvpPenalty = Math.max(0, c.getInt("death.pvp.penalty", 250));
+        pvpMessage = c.getString("death.pvp.message",
+                "<red><killer> <method> <victim> using <weapon> and lost <points> jolliness points for being naughty.</red>");
+        pvpVerbs.put("melee", c.getString("death.pvp.verbs.melee", "slew"));
+        pvpVerbs.put("projectile", c.getString("death.pvp.verbs.projectile", "shot"));
+        pvpVerbs.put("explosion", c.getString("death.pvp.verbs.explosion", "blew up"));
+
+        candyOn = c.getBoolean("snowballs.candy-cane.enabled", true);
+        candyTier = c.getInt("snowballs.candy-cane.unlock-tier", 2);
+        knockOn = c.getBoolean("snowballs.knockback.enabled", true);
+        knockTier = c.getInt("snowballs.knockback.unlock-tier", 3);
+        knockStrength = c.getDouble("snowballs.knockback.strength", 0.5);
+        knockLift = c.getDouble("snowballs.knockback.lift", 0.25);
+        candyBalls.clear();
+
         giftEnabled = c.getBoolean("gains.gifting.enabled", true);
         giftPoints = c.getInt("gains.gifting.points", 3);
         giftCdMs = c.getLong("gains.gifting.pair-cooldown-seconds", 300) * 1000L;
@@ -267,24 +385,11 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
                 else fx.put(t, es.getInt(en));
             }
 
-            List<Drop> table = new ArrayList<>();
-            double total = 0;
-            ConfigurationSection bd = s.getConfigurationSection("bonus-drops");
-            ConfigurationSection bt = bd == null ? null : bd.getConfigurationSection("table");
-            if (bt != null) for (String mn : bt.getKeys(false)) {
-                Material m = Material.matchMaterial(mn);
-                double w = bt.getDouble(mn);
-                if (m == null || w <= 0) { getLogger().warning("Bad bonus drop '" + mn + "' in tier " + k); continue; }
-                table.add(new Drop(m, w));
-                total += w;
-            }
-
             tiers.add(new Tier(
                     s.getInt("threshold"), s.getString("color", "#FFFFFF"), s.getInt("max-durability", 55),
                     s.getDouble("armor", 1.0), s.getDouble("toughness", 0.0), s.getInt("unbreaking", 0),
-                    s.getBoolean("glint", false), s.getBoolean("snow-trail", false),
-                    bd == null ? 0 : bd.getDouble("chance", 0), bd == null ? 1 : bd.getInt("amount", 1),
-                    table, total, fx));
+                    s.getBoolean("glint", false),
+                    Math.max(0, Math.min(1, s.getDouble("ore-duplicate-chance", 0))), fx));
         }
         tiers.sort(Comparator.comparingInt(Tier::threshold));
     }
@@ -371,6 +476,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
             List<Player> targets = tierSoundAll ? new ArrayList<>(Bukkit.getOnlinePlayers()) : List.of(p);
             for (Player q : targets) q.playSound(q.getLocation(), tierSound, SoundCategory.PLAYERS, tierVol, tierPitch);
         }
+        if (burstOn) burst(p.getLocation(), t, true);
     }
 
     private void gainSound(Player p) {
@@ -508,12 +614,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         return out;
     }
 
-    private boolean snowTrail(int t) {
-        for (int i = 0; i <= t; i++) if (tiers.get(i).snow()) return true;
-        return false;
-    }
-
-    /** Once a second: buffs, hat sync, actionbar, playtime. */
+    /** Once a second: buffs, hat sync, playtime. */
     private void slowTick() {
         if (tiers.isEmpty()) return;
         for (Player p : Bukkit.getOnlinePlayers()) {
@@ -522,31 +623,238 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
                 int s = playSecs.merge(p.getUniqueId(), 1, Integer::sum);
                 if (s >= playMinutes * 60) { playSecs.put(p.getUniqueId(), 0); add(p, playPts); }
             }
-            if (!wearing(p)) continue; // buffs and the action bar are hat-only
+            if (passiveOn && canEarn(p)) {
+                int ps = passiveSecs.merge(p.getUniqueId(), 1, Integer::sum);
+                if (ps >= passiveSecsNeeded) { passiveSecs.put(p.getUniqueId(), 0); add(p, passivePts); }
+            }
+            if (!wearing(p)) continue; // buffs are hat-only
             int j = get(p);
             int t = tierIdx(j);
             effectsFor(t).forEach((type, amp) ->
                     p.addPotionEffect(new PotionEffect(type, 60, amp, true, false, true)));
-            if (barEnabled) {
-                String next = t + 1 < tiers.size() ? fmt(tiers.get(t + 1).threshold()) : "MAX";
-                p.sendActionBar(MM.deserialize(barFormat,
-                        Placeholder.unparsed("jolly", fmt(j)),
-                        Placeholder.unparsed("tier", String.valueOf(t + 1)),
-                        Placeholder.unparsed("next", next),
-                        tierColor(t)));
-            }
         }
     }
 
-    /** Every 2 ticks: the snow trail. */
+    /** Every 2 ticks: particle style and footstep jingle (hat worn only). */
     private void fastTick() {
         if (tiers.isEmpty()) return;
         int now = Bukkit.getCurrentTick();
+        candyTrails();
         for (Player p : Bukkit.getOnlinePlayers()) {
-            if (now - lastMove.getOrDefault(p.getUniqueId(), -100) > 6) continue;
-            if (!wearing(p) || !snowTrail(tierIdx(get(p)))) continue;
-            p.getWorld().spawnParticle(Particle.SNOWFLAKE, p.getLocation().add(0, 0.15, 0), 3, 0.2, 0.05, 0.2, 0.01);
+            if (!wearing(p) || p.isInvisible() || p.getGameMode() == GameMode.SPECTATOR) continue;
+            UUID id = p.getUniqueId();
+            boolean moving = now - lastMove.getOrDefault(id, -100) <= 6;
+            String style = selectedStyle(p);
+            if (style != null) renderStyle(p, style, moving, now);
+            if (moving) jingle(p, id);
         }
+    }
+
+    // ------------------------------------------------------------------ cosmetics
+
+    /** Red and white dust along the path of every candy-cane snowball. */
+    private void candyTrails() {
+        if (candyBalls.isEmpty()) return;
+        Iterator<Map.Entry<Snowball, Location>> it = candyBalls.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<Snowball, Location> en = it.next();
+            Snowball sb = en.getKey();
+            if (!sb.isValid()) { it.remove(); continue; }
+            Location cur = sb.getLocation(), last = en.getValue();
+            World w = cur.getWorld();
+            if (w != null && last.getWorld() == w) {
+                Vector step = cur.toVector().subtract(last.toVector());
+                for (int k = 0; k < 3; k++) {
+                    Location l = last.clone().add(step.clone().multiply(k / 3.0));
+                    w.spawnParticle(Particle.DUST, l, 1, 0.04, 0.04, 0.04, 0, DUST_RED);
+                    w.spawnParticle(Particle.DUST, l, 1, 0.04, 0.04, 0.04, 0, DUST_WHITE);
+                }
+            }
+            en.setValue(cur);
+        }
+    }
+
+    private boolean unlocked(String style, Player p) {
+        int need = styleTier.getOrDefault(style, 0);
+        return need > 0 && tierIdx(get(p)) + 1 >= need;
+    }
+
+    /** The player's active style id, or null when off / locked / unknown. */
+    private String selectedStyle(Player p) {
+        String s = p.getPersistentDataContainer().get(PARTICLE, PersistentDataType.STRING);
+        if (s == null) s = defaultStyle;
+        if (s.equals("none") || !styleTier.containsKey(s) || !unlocked(s, p)) return null;
+        return s;
+    }
+
+    private void renderStyle(Player p, String style, boolean moving, int now) {
+        World w = p.getWorld();
+        Location feet = p.getLocation();
+        ThreadLocalRandom r = ThreadLocalRandom.current();
+        switch (style) {
+            case "snow" -> {
+                if (moving) w.spawnParticle(Particle.SNOWFLAKE, feet.clone().add(0, 0.15, 0), 3, 0.2, 0.05, 0.2, 0.01);
+            }
+            case "snow_glow" -> {
+                if (moving) {
+                    w.spawnParticle(Particle.SNOWFLAKE, feet.clone().add(0, 0.15, 0), 2, 0.2, 0.05, 0.2, 0.01);
+                    w.spawnParticle(Particle.END_ROD, feet.clone().add(0, 0.2, 0), 1, 0.25, 0.05, 0.25, 0.005);
+                } else if (r.nextInt(5) == 0) { // idle shimmer
+                    Location l = feet.clone().add(r.nextDouble(-0.5, 0.5), r.nextDouble(0.2, 1.8), r.nextDouble(-0.5, 0.5));
+                    w.spawnParticle(Particle.END_ROD, l, 0, 0, 0.4, 0, 0.01);
+                }
+            }
+            case "candy_cane" -> {
+                if (moving) {
+                    Location l = feet.clone().add(0, 0.2, 0);
+                    w.spawnParticle(Particle.DUST, l, 2, 0.2, 0.05, 0.2, 0, DUST_RED);
+                    w.spawnParticle(Particle.DUST, l, 2, 0.2, 0.05, 0.2, 0, DUST_WHITE);
+                }
+            }
+            case "holly" -> {
+                if (moving) {
+                    Location l = feet.clone().add(0, 0.2, 0);
+                    w.spawnParticle(Particle.DUST, l, 2, 0.2, 0.05, 0.2, 0, DUST_GREEN);
+                    w.spawnParticle(Particle.DUST, l, 1, 0.2, 0.05, 0.2, 0, DUST_RED);
+                }
+            }
+            case "snow_aura" -> {
+                double a = now * 0.22;
+                for (int i = 0; i < 3; i++) {
+                    double ang = a + i * (2 * Math.PI / 3);
+                    Location l = feet.clone().add(Math.cos(ang) * 0.9, 1.0 + Math.sin(a * 0.5 + i) * 0.35, Math.sin(ang) * 0.9);
+                    w.spawnParticle(Particle.SNOWFLAKE, l, 1, 0, 0, 0, 0);
+                }
+            }
+            case "starlight" -> {
+                for (int i = 0; i < 2; i++) {
+                    Location l = feet.clone().add(r.nextDouble(-0.6, 0.6), r.nextDouble(0, 2.0), r.nextDouble(-0.6, 0.6));
+                    w.spawnParticle(Particle.END_ROD, l, 0, 0, 0.6, 0, 0.02);
+                }
+            }
+            case "aurora" -> {
+                Location base = p.getEyeLocation().add(0, 0.55, 0);
+                double a = now * 0.15;
+                for (int i = 0; i < 6; i++) {
+                    double ang = a + i * Math.PI / 3;
+                    int k = (i + now / 10) % AURORA.length;
+                    Particle.DustTransition dt = new Particle.DustTransition(AURORA[k], AURORA[(k + 1) % AURORA.length], 1.0f);
+                    w.spawnParticle(Particle.DUST_COLOR_TRANSITION, base.clone().add(Math.cos(ang) * 0.55, 0, Math.sin(ang) * 0.55), 1, 0, 0, 0, 0, dt);
+                }
+            }
+            case "crown" -> {
+                Location base = p.getEyeLocation().add(0, 0.5, 0);
+                for (int i = 0; i < 2; i++) {
+                    int k = r.nextInt(5);
+                    double ang = k * (2 * Math.PI / 5);
+                    double h = k % 2 == 0 ? 0.25 : 0.1; // alternating crown points
+                    w.spawnParticle(Particle.END_ROD, base.clone().add(Math.cos(ang) * 0.32, h, Math.sin(ang) * 0.32), 0, 0, 0, 0, 0);
+                }
+            }
+            default -> { }
+        }
+    }
+
+    private void jingle(Player p, UUID id) {
+        if (!jingleOn || tierIdx(get(p)) + 1 < jingleMinTier || !jingleFor(p)) return;
+        if (p.isSneaking() || p.isGliding() || p.isInsideVehicle() || p.isSwimming()) return;
+        if (jingleTick.merge(id, 1, Integer::sum) < 5) return; // roughly every 10 ticks while moving
+        jingleTick.put(id, 0);
+        float pitch = JINGLE_PITCHES[ThreadLocalRandom.current().nextInt(JINGLE_PITCHES.length)];
+        p.getWorld().playSound(p.getLocation(), jingleSound, SoundCategory.PLAYERS, jingleVol, pitch);
+    }
+
+    private boolean jingleFor(Player p) {
+        Byte b = p.getPersistentDataContainer().get(JINGLE, PersistentDataType.BYTE);
+        return b == null ? jingleDefault : b == 1;
+    }
+
+    /** Particle burst in the tier colour. Purely visual (no real fireworks, so nobody gets hurt). */
+    private void burst(Location at, int t, boolean big) {
+        World w = at.getWorld();
+        if (w == null || tiers.isEmpty()) return;
+        TextColor tc = TextColor.fromHexString(tiers.get(Math.max(0, Math.min(t, tiers.size() - 1))).color());
+        Color col = tc == null ? Color.WHITE : Color.fromRGB(tc.red(), tc.green(), tc.blue());
+        Location c = at.clone().add(0, 1.0, 0);
+        int n = big ? 2 : 1;
+        w.spawnParticle(Particle.DUST, c, 35 * n, 0.5, 0.7, 0.5, 0, new Particle.DustOptions(col, 1.4f));
+        w.spawnParticle(Particle.SNOWFLAKE, c, 25 * n, 0.6, 0.8, 0.6, 0.05);
+        w.spawnParticle(Particle.FIREWORK, c, 20 * n, 0.1, 0.1, 0.1, 0.2);
+        w.playSound(c, Sound.ENTITY_FIREWORK_ROCKET_TWINKLE, SoundCategory.PLAYERS, big ? 1.0f : 0.7f, big ? 1.0f : 1.3f);
+    }
+
+    private void cheer(Player p) {
+        if (!cheerOn) { p.sendMessage(Component.text("Cheering is disabled.", NamedTextColor.GRAY)); return; }
+        if (!wearing(p)) { p.sendMessage(Component.text("Wear your Santa Hat to cheer.", NamedTextColor.GRAY)); return; }
+        if (cooling(p.getUniqueId(), "cheer", cheerCdMs)) {
+            p.sendMessage(Component.text("Catch your breath, then cheer again.", NamedTextColor.GRAY));
+            return;
+        }
+        int t = tierIdx(get(p));
+        burst(p.getLocation(), t, false);
+        Component msg = MM.deserialize(cheerMsg, Placeholder.unparsed("player", p.getName()), tierColor(t));
+        double r2 = (double) cheerRadius * cheerRadius;
+        for (Player q : p.getWorld().getPlayers())
+            if (q.getLocation().distanceSquared(p.getLocation()) <= r2) q.sendMessage(msg);
+    }
+
+    private void particleCommand(Player p, String[] a) {
+        PersistentDataContainer pdc = p.getPersistentDataContainer();
+        int myTier = tierIdx(get(p)) + 1;
+        if (a.length < 2) {
+            String cur = selectedStyle(p);
+            p.sendMessage(Component.text("Particle styles - /jolly particle <style|none|default>", NamedTextColor.GOLD));
+            for (Style st : STYLES) {
+                int need = styleTier.getOrDefault(st.id(), 0);
+                if (need <= 0) continue;
+                boolean open = myTier >= need, sel = st.id().equals(cur);
+                p.sendMessage(Component.text((sel ? "> " : open ? "+ " : "- ") + st.id() + "  (" + st.name() + ")"
+                                + (open ? "" : "  - unlocks at tier " + need),
+                        sel ? NamedTextColor.GREEN : open ? NamedTextColor.WHITE : NamedTextColor.DARK_GRAY));
+            }
+            if (cur == null) p.sendMessage(Component.text("Currently off.", NamedTextColor.GRAY));
+            return;
+        }
+        String want = a[1].toLowerCase(Locale.ROOT);
+        if (want.equals("none") || want.equals("off")) {
+            pdc.set(PARTICLE, PersistentDataType.STRING, "none");
+            p.sendMessage(Component.text("Particles off.", NamedTextColor.GRAY));
+            return;
+        }
+        if (want.equals("default")) {
+            pdc.remove(PARTICLE);
+            p.sendMessage(Component.text("Particle style reset to the default.", NamedTextColor.GRAY));
+            return;
+        }
+        Style st = STYLES.stream().filter(x -> x.id().equals(want)).findFirst().orElse(null);
+        int need = st == null ? 0 : styleTier.getOrDefault(st.id(), 0);
+        if (st == null || need <= 0) {
+            p.sendMessage(Component.text("Unknown style. Type /jolly particle to see the list.", NamedTextColor.RED));
+            return;
+        }
+        if (myTier < need) {
+            p.sendMessage(Component.text(st.name() + " unlocks at tier " + need + ".", NamedTextColor.RED));
+            return;
+        }
+        pdc.set(PARTICLE, PersistentDataType.STRING, st.id());
+        p.sendMessage(Component.text("Particle style: " + st.name() + ".", NamedTextColor.GREEN));
+        if (!wearing(p)) p.sendMessage(Component.text("Wear your Santa Hat to see it.", NamedTextColor.GRAY));
+    }
+
+    private void jingleCommand(Player p, String[] a) {
+        if (!jingleOn) { p.sendMessage(Component.text("Footstep jingle is disabled.", NamedTextColor.GRAY)); return; }
+        if (tierIdx(get(p)) + 1 < jingleMinTier) {
+            p.sendMessage(Component.text("Footstep jingle unlocks at tier " + jingleMinTier + ".", NamedTextColor.RED));
+            return;
+        }
+        boolean on;
+        if (a.length >= 2) {
+            if (a[1].equalsIgnoreCase("on")) on = true;
+            else if (a[1].equalsIgnoreCase("off")) on = false;
+            else { p.sendMessage(Component.text("Usage: /jolly jingle [on|off]", NamedTextColor.RED)); return; }
+        } else on = !jingleFor(p);
+        p.getPersistentDataContainer().set(JINGLE, PersistentDataType.BYTE, (byte) (on ? 1 : 0));
+        p.sendMessage(Component.text("Footstep jingle " + (on ? "on" : "off") + ".", NamedTextColor.GRAY));
     }
 
     // ------------------------------------------------------------------ gains
@@ -561,16 +869,34 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         lastMove.put(id, Bukkit.getCurrentTick());
         if (!walkEnabled || d > 2 || p.isInsideVehicle() || p.isGliding() || !canEarn(p)) return;
 
+        String biome = p.getLocation().getBlock().getBiome().getKey().getKey();
+        walkGain(p, d, snowBiomes.contains(biome) ? snowMult : 1.0);
+    }
+
+    /** Adds travelled distance; every walking-blocks-per-point blocks pays out, scaled by mult. */
+    private void walkGain(Player p, double d, double mult) {
+        UUID id = p.getUniqueId();
         double dist = walkDist.merge(id, d, Double::sum);
         if (dist < 1) return;
         double whole = Math.floor(dist);
         walkDist.put(id, dist - whole);
-
-        String biome = p.getLocation().getBlock().getBiome().getKey().getKey();
-        double mult = snowBiomes.contains(biome) ? snowMult : 1.0;
         double acc = walkPts.merge(id, whole / walkBlocks * walkPoints * mult, Double::sum);
         int pts = (int) acc;
         if (pts > 0) { walkPts.put(id, acc - pts); add(p, pts); }
+    }
+
+    /** Boating over ice pays out at iceMult x the walking rate. */
+    @EventHandler(ignoreCancelled = true)
+    public void onVehicleMove(VehicleMoveEvent e) {
+        if (!iceBoatOn || !(e.getVehicle() instanceof Boat boat)) return;
+        List<Entity> riders = boat.getPassengers();
+        if (riders.isEmpty() || !(riders.get(0) instanceof Player p)) return;
+        double dx = e.getTo().getX() - e.getFrom().getX(), dz = e.getTo().getZ() - e.getFrom().getZ();
+        double d = Math.sqrt(dx * dx + dz * dz);
+        if (d < 0.01 || d > 6 || !canEarn(p)) return;
+        Block at = e.getTo().getBlock();
+        if (!iceBlocks.contains(at.getType()) && !iceBlocks.contains(at.getRelative(BlockFace.DOWN).getType())) return;
+        walkGain(p, d, iceMult);
     }
 
     private boolean isOre(Material m) { return m.name().endsWith("_ORE") || m == Material.ANCIENT_DEBRIS; }
@@ -639,20 +965,24 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         if (!canEarn(p)) return;
 
         if (mineEnabled) add(p, minePoints.getOrDefault(type, 0));
-        if (wearing(p)) rollBonus(p, b); // bonus drops are a hat perk
+        if (wearing(p)) rollDuplicate(p, b, type); // duplication is a hat perk
     }
 
-    private void rollBonus(Player p, Block b) {
-        Tier T = tiers.get(tierIdx(get(p)));
-        if (T.bonusChance() <= 0 || T.table().isEmpty()) return;
-        ThreadLocalRandom rnd = ThreadLocalRandom.current();
-        if (rnd.nextDouble() >= T.bonusChance()) return;
-        double r = rnd.nextDouble() * T.totalWeight();
-        Drop pick = T.table().get(T.table().size() - 1);
-        for (Drop d : T.table()) { r -= d.weight(); if (r < 0) { pick = d; break; } }
-        b.getWorld().dropItemNaturally(b.getLocation().add(0.5, 0.5, 0.5), new ItemStack(pick.mat(), T.bonusAmount()));
+    /** Chance (per tier) to drop a second copy of what this ore just gave. Never for excluded blocks/items. */
+    private void rollDuplicate(Player p, Block b, Material type) {
+        if (p.getGameMode() == GameMode.CREATIVE || dupExclude.contains(type)) return;
+        double chance = tiers.get(tierIdx(get(p))).dupChance();
+        if (chance <= 0 || ThreadLocalRandom.current().nextDouble() >= chance) return;
+        Location at = b.getLocation().add(0.5, 0.5, 0.5);
+        boolean any = false;
+        for (ItemStack d : b.getDrops(p.getInventory().getItemInMainHand(), p)) {
+            if (d == null || d.getType().isAir() || dupExclude.contains(d.getType())) continue;
+            b.getWorld().dropItemNaturally(at, d.clone());
+            any = true;
+        }
+        if (!any) return;
         p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.6f, 1.4f);
-        b.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, b.getLocation().add(0.5, 0.5, 0.5), 6, 0.3, 0.3, 0.3, 0);
+        b.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, at, 6, 0.3, 0.3, 0.3, 0);
     }
 
     @EventHandler public void onChat(AsyncChatEvent e) {
@@ -667,6 +997,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
     }
 
     @EventHandler public void onPickup(EntityPickupItemEvent e) {
+        if (e.getEntity() instanceof Player who) discGain(who, e.getItem().getItemStack());
         if (!giftEnabled || !(e.getEntity() instanceof Player taker)) return;
         UUID thrower = e.getItem().getThrower();
         if (thrower == null || thrower.equals(taker.getUniqueId())) return;
@@ -683,11 +1014,100 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
     }
 
     @EventHandler public void onSnowball(ProjectileHitEvent e) {
-        if (!snowballOn || !(e.getEntity() instanceof Snowball sb)) return;
+        if (!(e.getEntity() instanceof Snowball sb)) return;
+        candyBalls.remove(sb);
         if (!(sb.getShooter() instanceof Player p)) return;
+        if (e.getHitEntity() instanceof Player victim) knockback(p, sb, victim);
+        if (!snowballOn) return;
         if (!(e.getHitEntity() instanceof LivingEntity hit) || hit.equals(p)) return;
         if (cooling(p.getUniqueId(), "snowball", snowballCd)) return;
         add(p, snowballPts);
+    }
+
+    /** Candy-cane snowballs: tracked from launch, trail drawn in fastTick. */
+    @EventHandler(ignoreCancelled = true)
+    public void onLaunch(ProjectileLaunchEvent e) {
+        if (!candyOn || !(e.getEntity() instanceof Snowball sb) || !(sb.getShooter() instanceof Player p)) return;
+        if (candyBalls.size() >= 256 || !wearing(p) || tierIdx(get(p)) + 1 < candyTier) return;
+        candyBalls.put(sb, sb.getLocation());
+    }
+
+    /** Snowballs do no damage to players in vanilla; this pushes them back instead (tier + hat needed). */
+    private void knockback(Player shooter, Snowball sb, Player victim) {
+        if (!knockOn || victim.equals(shooter) || !wearing(shooter) || tierIdx(get(shooter)) + 1 < knockTier) return;
+        GameMode gm = victim.getGameMode();
+        if (gm == GameMode.CREATIVE || gm == GameMode.SPECTATOR || victim.isInvulnerable() || !victim.getWorld().getPVP()) return;
+        Vector dir = sb.getVelocity().clone().setY(0);
+        if (dir.lengthSquared() < 1.0E-4)
+            dir = victim.getLocation().toVector().subtract(shooter.getLocation().toVector()).setY(0);
+        if (dir.lengthSquared() < 1.0E-4) return;
+        dir = dir.normalize().multiply(knockStrength).setY(knockLift);
+        victim.setVelocity(victim.getVelocity().add(dir));
+        victim.getWorld().spawnParticle(Particle.SNOWFLAKE, victim.getLocation().add(0, 1, 0), 10, 0.3, 0.4, 0.3, 0.05);
+    }
+
+    // ---- snowmen, bells, discs
+
+    @EventHandler public void onInteract(PlayerInteractEvent e) {
+        if (!snowmanOn || e.getAction() != Action.RIGHT_CLICK_BLOCK || e.getItem() == null) return;
+        Material m = e.getItem().getType();
+        if (m == Material.CARVED_PUMPKIN || m == Material.JACK_O_LANTERN)
+            pumpkinUse.put(e.getPlayer().getUniqueId(), Bukkit.getCurrentTick());
+    }
+
+    /** The golem spawns before BlockPlaceEvent, so credit whoever just right-clicked a pumpkin nearby. */
+    @EventHandler(ignoreCancelled = true)
+    public void onSnowmanBuilt(CreatureSpawnEvent e) {
+        if (!snowmanOn || e.getSpawnReason() != CreatureSpawnEvent.SpawnReason.BUILD_SNOWMAN) return;
+        Location at = e.getLocation();
+        int now = Bukkit.getCurrentTick();
+        Player best = null;
+        double bestD = 64; // within 8 blocks
+        for (Map.Entry<UUID, Integer> en : pumpkinUse.entrySet()) {
+            if (now - en.getValue() > 20) continue;
+            Player q = Bukkit.getPlayer(en.getKey());
+            if (q == null || q.getWorld() != at.getWorld()) continue;
+            double d = q.getLocation().distanceSquared(at);
+            if (d < bestD) { bestD = d; best = q; }
+        }
+        if (best == null || cooling(best.getUniqueId(), "snowman", snowmanCd)) return;
+        add(best, snowmanPts);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onBell(BellRingEvent e) {
+        if (!bellOn || !(e.getEntity() instanceof Player p)) return;
+        if (cooling(p.getUniqueId(), "bell", bellCd)) return;
+        add(p, bellPts);
+    }
+
+    /** Taking a disc out of a chest (or any other container) counts the same as picking it up. */
+    @EventHandler(ignoreCancelled = true)
+    public void onInvClick(InventoryClickEvent e) {
+        if (!discOn || !(e.getWhoClicked() instanceof Player p) || e.getClickedInventory() == null) return;
+        if (e.getClickedInventory().getType() == InventoryType.PLAYER) return; // only items coming from elsewhere
+        ItemStack it = e.getCurrentItem();
+        if (it == null || !discPoints.containsKey(it.getType())) return;
+        switch (e.getAction()) {
+            case PICKUP_ALL, PICKUP_HALF, PICKUP_ONE, PICKUP_SOME, MOVE_TO_OTHER_INVENTORY,
+                 HOTBAR_SWAP -> discGain(p, it);
+            default -> { }
+        }
+    }
+
+    /** Pays out once per disc type per player, remembered on the player. */
+    private void discGain(Player p, ItemStack it) {
+        if (!discOn || it == null) return;
+        Material m = it.getType();
+        int pts = discPoints.getOrDefault(m, 0);
+        if (pts <= 0 || !canEarn(p)) return;
+        PersistentDataContainer pdc = p.getPersistentDataContainer();
+        String have = pdc.getOrDefault(DISCS, PersistentDataType.STRING, "");
+        Set<String> got = new LinkedHashSet<>();
+        for (String x : have.split(",")) if (!x.isEmpty()) got.add(x);
+        if (!got.add(m.name())) return;
+        pdc.set(DISCS, PersistentDataType.STRING, String.join(",", got));
+        add(p, pts);
     }
 
     @EventHandler public void onTrade(PlayerTradeEvent e) {
@@ -733,6 +1153,42 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         if (destroyHat) e.getDrops().removeIf(this::isHat);
         if (hatOnRespawn && had) needsHat.add(p.getUniqueId());
         if (!keepJolly) p.getPersistentDataContainer().set(JOLLY, PersistentDataType.INTEGER, 0);
+
+        PvpKill kill = pvpOn ? pvpKill(p) : null;
+        if (kill == null) return;
+        Player k = kill.killer();
+        int lost = Math.min(pvpPenalty, get(k));
+        if (lost > 0) set(k, get(k) - lost);
+        e.deathMessage(MM.deserialize(pvpMessage,
+                Placeholder.unparsed("killer", k.getName()),
+                Placeholder.unparsed("victim", p.getName()),
+                Placeholder.unparsed("method", kill.method()),
+                Placeholder.component("weapon", kill.weapon()),
+                Placeholder.unparsed("points", fmt(lost))));
+    }
+
+    /** Who killed this player and how, or null if it was not another player. */
+    private PvpKill pvpKill(Player victim) {
+        if (!(victim.getLastDamageCause() instanceof EntityDamageByEntityEvent ed)) return null;
+        Entity d = ed.getDamager();
+        if (d instanceof Player k1 && !k1.equals(victim))
+            return new PvpKill(k1, pvpVerbs.get("melee"), weaponName(k1.getInventory().getItemInMainHand()));
+        if (d instanceof Projectile pr && pr.getShooter() instanceof Player k2 && !k2.equals(victim)) {
+            ItemStack hand = k2.getInventory().getItemInMainHand();
+            Material hm = hand.getType();
+            Component w = hm == Material.BOW || hm == Material.CROSSBOW || hm == Material.TRIDENT
+                    ? weaponName(hand) : Component.translatable(pr.getType().translationKey());
+            return new PvpKill(k2, pvpVerbs.get("projectile"), w);
+        }
+        if (d instanceof TNTPrimed tnt && tnt.getSource() instanceof Player k3 && !k3.equals(victim))
+            return new PvpKill(k3, pvpVerbs.get("explosion"), Component.translatable(Material.TNT.translationKey()));
+        return null;
+    }
+
+    private Component weaponName(ItemStack it) {
+        if (it == null || it.getType().isAir()) return Component.text("their bare fists");
+        if (it.hasItemMeta() && it.getItemMeta().hasDisplayName()) return it.getItemMeta().displayName();
+        return Component.translatable(it.getType().translationKey());
     }
 
     @EventHandler public void onRespawn(PlayerRespawnEvent e) {
@@ -761,7 +1217,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
     @EventHandler public void onQuit(PlayerQuitEvent e) {
         UUID id = e.getPlayer().getUniqueId();
         walkDist.remove(id); walkPts.remove(id); lastMove.remove(id);
-        lastGainSound.remove(id); playSecs.remove(id);
+        lastGainSound.remove(id); playSecs.remove(id); jingleTick.remove(id); passiveSecs.remove(id); pumpkinUse.remove(id);
         String prefix = id.toString();
         cooldowns.keySet().removeIf(k -> k.startsWith(prefix));
     }
@@ -777,9 +1233,18 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
             if (requireHat && !wearing(p)) p.sendMessage(Component.text("Wear your Santa Hat to earn more.", NamedTextColor.GRAY));
             return true;
         }
+        String sub = a[0].toLowerCase(Locale.ROOT);
+        if (sub.equals("particle") || sub.equals("particles") || sub.equals("jingle") || sub.equals("cheer")) {
+            if (!(s instanceof Player p)) { s.sendMessage("Players only."); return true; }
+            switch (sub) {
+                case "jingle" -> jingleCommand(p, a);
+                case "cheer" -> cheer(p);
+                default -> particleCommand(p, a);
+            }
+            return true;
+        }
         if (!s.hasPermission("jolly.admin")) { s.sendMessage("No permission."); return true; }
 
-        String sub = a[0].toLowerCase(Locale.ROOT);
         if (sub.equals("reload")) { loadSettings(); s.sendMessage("Jolly config reloaded."); return true; }
         if (a.length < 2) return false;
         Player t = Bukkit.getPlayer(a[1]);
@@ -801,12 +1266,25 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
     }
 
     @Override public List<String> onTabComplete(CommandSender s, Command c, String l, String[] a) {
-        if (!s.hasPermission("jolly.admin")) return List.of();
-        if (a.length == 1) return List.of("add", "set", "get", "give", "reload").stream()
-                .filter(x -> x.startsWith(a[0].toLowerCase(Locale.ROOT))).toList();
-        if (a.length == 2 && !a[0].equalsIgnoreCase("reload")) return Bukkit.getOnlinePlayers().stream()
+        boolean admin = s.hasPermission("jolly.admin");
+        if (a.length == 1) {
+            List<String> subs = new ArrayList<>(List.of("particle", "jingle", "cheer"));
+            if (admin) subs.addAll(List.of("add", "set", "get", "give", "reload"));
+            return subs.stream().filter(x -> x.startsWith(a[0].toLowerCase(Locale.ROOT))).toList();
+        }
+        String sub = a[0].toLowerCase(Locale.ROOT);
+        if (a.length == 2 && (sub.equals("particle") || sub.equals("particles")) && s instanceof Player p) {
+            List<String> opts = new ArrayList<>(List.of("none", "default"));
+            for (Style st : STYLES) if (unlocked(st.id(), p)) opts.add(st.id());
+            return opts.stream().filter(x -> x.startsWith(a[1].toLowerCase(Locale.ROOT))).toList();
+        }
+        if (a.length == 2 && sub.equals("jingle")) {
+            return List.of("on", "off").stream().filter(x -> x.startsWith(a[1].toLowerCase(Locale.ROOT))).toList();
+        }
+        if (!admin) return List.of();
+        if (a.length == 2 && List.of("add", "set", "get", "give").contains(sub)) return Bukkit.getOnlinePlayers().stream()
                 .map(Player::getName).filter(n -> n.toLowerCase(Locale.ROOT).startsWith(a[1].toLowerCase(Locale.ROOT))).toList();
-        if (a.length == 3 && (a[0].equalsIgnoreCase("add") || a[0].equalsIgnoreCase("set"))) return List.of("10", "100", "1000");
+        if (a.length == 3 && (sub.equals("add") || sub.equals("set"))) return List.of("10", "100", "1000");
         return List.of();
     }
 }
