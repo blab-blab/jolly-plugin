@@ -1,16 +1,22 @@
 # Jolly config. Run /jolly reload after editing.
 # Every way of earning jolliness has its own "enabled:" switch under "gains:".
-config-version: 3
+config-version: 5
 
 max-jolliness: 1000000
 ignore-creative: true          # creative players earn nothing
-require-hat: false      
+require-hat: false             # true = jolliness only counts while the hat is worn. Buffs, ore duplication and cosmetics always need the hat.
 give-hat-on-first-join: false
 
 death:
   keep-jolliness: true         # false = dying resets jolliness to 0
   destroy-hat: false           # true = the hat is deleted from the death drops
   give-hat-on-respawn: false   # true = a new hat (at your current tier) comes back on respawn
+  pvp:                         # one player killing another
+    enabled: true              # false = normal death message and no penalty
+    penalty: 250               # jolliness the KILLER loses
+    # Placeholders: <killer> <victim> <method> <weapon> <points>
+    message: "<red><killer> <method> <victim> using <weapon> and lost <points> jolliness points for being naughty.</red>"
+    verbs: { melee: "slew", projectile: "shot", explosion: "blew up" }   # fills <method>
 
 recipe:
   enabled: true
@@ -30,14 +36,55 @@ tablist:
   enabled: true
   format: "<name> <tiercolor>[<jolly>]</tiercolor>"
 
-actionbar:
-  enabled: true                            # shown only while the hat is worn
-  format: "<gold>Jolliness: <tiercolor><jolly></tiercolor> <gray>(tier <tier>, next: <next>)</gray>"
-
 # true  = 3D hat from the resource pack, drawn on the head (the item model is shown instead of the armor layer)
 # false = plain red leather helmet look (no resource pack needed)
 hat-display:
   enabled: true
+
+# Natural ore you mine can drop a second copy of its drops. The chance depends on your tier
+# (see "ore-duplicate-chance" in the tiers below) and needs the hat. Placed ore never counts.
+ore-duplication:
+  exclude: [ANCIENT_DEBRIS, NETHERITE_SCRAP]   # never duplicated (block or item names)
+
+# Cosmetic particle styles, picked with /jolly particle <style>. Only shown while the hat is worn.
+# Each number is the tier needed to unlock that style (0 = style disabled).
+particles:
+  default: snow                # style used until a player picks one ("none" = off until they choose)
+  unlock-tiers:
+    snow: 2                    # snowflake trail while moving
+    snow_glow: 3               # snowflakes + glowing motes; shimmers when standing still
+    candy_cane: 3              # red and white trail
+    holly: 4                   # red and green trail
+    snow_aura: 4               # snowflakes orbiting you
+    starlight: 5               # sparkles rising around you
+    aurora: 5                  # colour-shifting halo above your head
+    crown: 6                   # frost crown
+
+jingle:                        # quiet bell while walking, toggled with /jolly jingle [on|off]
+  enabled: true
+  unlock-tier: 3
+  default-on: false
+  sound: "minecraft:block.note_block.chime"
+  volume: 0.25
+
+cheer:                         # /jolly cheer: a burst of festive particles (hat required)
+  enabled: true
+  cooldown-seconds: 30
+  radius: 24                   # who sees the message
+  message: "<tiercolor><player> cheers!</tiercolor>"
+
+snowballs:                     # snowball perks (hat required)
+  candy-cane:
+    enabled: true              # thrown snowballs leave a red and white trail
+    unlock-tier: 2
+  knockback:
+    enabled: true              # snowballs push other players back, no damage
+    unlock-tier: 3
+    strength: 0.5
+    lift: 0.25
+
+tier-up-burst:
+  enabled: true                # particle burst + twinkle where a player reaches a new tier
 
 sounds:
   gain:                        # played to the player whenever they gain jolliness
@@ -141,6 +188,44 @@ gains:
     enabled: true
     minutes: 5                 # every N minutes with the hat on
     points: 1
+  passive:
+    enabled: true
+    seconds: 60                # every N seconds online
+    points: 1
+  ice-boating:
+    enabled: true
+    multiplier: 2.0            # x the walking rate while boating over ice
+    blocks: [ICE, PACKED_ICE, BLUE_ICE, FROSTED_ICE]
+  snowmen:
+    enabled: true              # building a snow golem (placing the pumpkin yourself; dispensers don't count)
+    points: 20
+    cooldown-seconds: 60
+  bells:
+    enabled: true              # ringing a bell
+    points: 5
+    cooldown-seconds: 60
+  music-discs:                 # the FIRST time each disc enters your inventory (loot chest, drop, ground...)
+    enabled: true
+    points:
+      MUSIC_DISC_13: 50
+      MUSIC_DISC_CAT: 50
+      MUSIC_DISC_BLOCKS: 50
+      MUSIC_DISC_CHIRP: 50
+      MUSIC_DISC_FAR: 50
+      MUSIC_DISC_MALL: 50
+      MUSIC_DISC_MELLOHI: 50
+      MUSIC_DISC_STAL: 50
+      MUSIC_DISC_STRAD: 50
+      MUSIC_DISC_WARD: 50
+      MUSIC_DISC_11: 50
+      MUSIC_DISC_WAIT: 50
+      MUSIC_DISC_OTHERSIDE: 250
+      MUSIC_DISC_5: 250
+      MUSIC_DISC_PIGSTEP: 250
+      MUSIC_DISC_RELIC: 250
+      MUSIC_DISC_CREATOR: 250
+      MUSIC_DISC_CREATOR_MUSIC_BOX: 250
+      MUSIC_DISC_PRECIPICE: 250
   mob-kills:
     enabled: false             # off by default: mob farms make it easy to inflate
     points: 1                  # any hostile mob
@@ -159,12 +244,13 @@ gains:
     cooldown-seconds: 60
     phrases: ["merry christmas", "happy holidays", "ho ho ho"]
 
-# Tier colors ("color") are used for the pom pom in chat/tab/actionbar/announcements.
+# Tier colors ("color") are used for the pom pom in chat/tab/announcements and the tier-up burst.
 # The in-game pom pom tint comes from the resource pack (assets/jolly/items/santa_hat_<tier>.json).
 # Tier 1 gray, 2 green, 3 blue, 4 purple, 5 yellow, 6 red (max).
 # armor/toughness are the helmet's TOTAL values (leather helmet = 1 armor, diamond = 3 armor + 2 toughness).
-# effects: vanilla effect id -> amplifier (0 = level I). Effects stack upward through tiers.
-# bonus-drops: chance per natural ore broken, then a weighted roll on the table.
+# effects: vanilla effect id -> amplifier (0 = level I, 1 = level II). Effects stack upward through tiers.
+# ore-duplicate-chance: 0.05 = 5% chance that a natural ore you mine drops a second copy of its drops.
+# Frost resistance is built in: the hat is a leather helmet, so powder snow never freezes the wearer.
 tiers:
   "1":
     threshold: 0
@@ -174,87 +260,55 @@ tiers:
     toughness: 0.0
     unbreaking: 0
     glint: false
-    snow-trail: false
     effects: {}
-    bonus-drops: { chance: 0.0, amount: 1, table: {} }
+    ore-duplicate-chance: 0.0
   "2":
-    threshold: 100
+    threshold: 2000
     color: "#3DD13D"
     max-durability: 120
     armor: 1.5
     toughness: 0.5
     unbreaking: 1
     glint: false
-    snow-trail: false
-    effects: { speed: 0 }
-    bonus-drops: { chance: 0.0, amount: 1, table: {} }
+    effects: { speed: 1 }
+    ore-duplicate-chance: 0.0
   "3":
-    threshold: 250
+    threshold: 5000
     color: "#3D7BFF"
     max-durability: 200
     armor: 2.0
     toughness: 1.0
     unbreaking: 2
     glint: false
-    snow-trail: false
     effects: { luck: 0 }
-    bonus-drops:
-      chance: 0.02
-      amount: 1
-      table: { COAL: 50, RAW_COPPER: 30, RAW_IRON: 20 }
+    ore-duplicate-chance: 0.02
   "4":
-    threshold: 500
+    threshold: 10000
     color: "#A43DFF"
     max-durability: 280
     armor: 2.5
     toughness: 1.5
     unbreaking: 3
     glint: false
-    snow-trail: true          # snowflake trail while moving (this tier and above)
     effects: { hero_of_the_village: 0 }
-    bonus-drops:
-      chance: 0.04
-      amount: 1
-      table: { COAL: 40, RAW_COPPER: 25, RAW_IRON: 15, RAW_GOLD: 12, LAPIS_LAZULI: 8 }
+    ore-duplicate-chance: 0.04
   "5":
-    threshold: 1000
+    threshold: 20000
     color: "#FFD92E"
     max-durability: 363
     armor: 3.0
     toughness: 2.0
     unbreaking: 3
     glint: true
-    snow-trail: true
     effects: { regeneration: 0 }
-    bonus-drops:
-      chance: 0.07
-      amount: 1
-      table:
-        COAL: 30
-        RAW_COPPER: 20
-        RAW_GOLD: 15
-        RAW_IRON: 15
-        LAPIS_LAZULI: 12.5
-        DIAMOND: 7.5
-        NETHERITE_INGOT: 0.5
+    ore-duplicate-chance: 0.07
   "6":
-    threshold: 2500
+    threshold: 50000
     color: "#FF3030"
     max-durability: 407
     armor: 3.0
     toughness: 3.0
     unbreaking: 3
     glint: true
-    snow-trail: true
-    effects: { resistance: 0 }
-    bonus-drops:
-      chance: 0.10
-      amount: 1
-      table:
-        COAL: 25
-        RAW_COPPER: 15
-        RAW_GOLD: 15
-        RAW_IRON: 15
-        LAPIS_LAZULI: 12
-        DIAMOND: 15
-        NETHERITE_INGOT: 2
+    effects: {}
+    ore-duplicate-chance: 0.10

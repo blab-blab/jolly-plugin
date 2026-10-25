@@ -1,11 +1,11 @@
 name: Jolly
-version: 3.0
+version: 3.2
 main: dev.jolly.JollyPlugin
 api-version: "26.3"
 commands:
   jolly:
     description: Jolliness counter
-    usage: /jolly [add|set|get|give|reload]
+    usage: /jolly [particle|jingle|cheer|add|set|get|give|reload]
 permissions:
   jolly.admin:
     default: op
