@@ -308,7 +308,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         ConfigurationSection bp = c.getConfigurationSection("gains.mob-kills.boss-points");
         if (bp != null) for (String k : bp.getKeys(false)) {
             try { bossPoints.put(EntityType.valueOf(k.toUpperCase(Locale.ROOT)), bp.getInt(k)); }
-            catch (IllegalArgumentException ex) { getLogger().warning("Unknown entity in mob-kills.boss-points: " + k); }
+            catch (IllegalArgumentException ignored) { getLogger().warning("Unknown entity in mob-kills.boss-points: " + k); }
         }
 
         passiveOn = c.getBoolean("gains.passive.enabled", true);
