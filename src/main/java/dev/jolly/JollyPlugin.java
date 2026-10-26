@@ -78,11 +78,11 @@ import java.util.concurrent.ThreadLocalRandom;
 
 public final class JollyPlugin extends JavaPlugin implements Listener, TabExecutor {
 
-    private static final int CONFIG_VERSION = 5;
+    private static final int CONFIG_VERSION = 6;
     /** Bump when the hat item's components change so old hats get rewritten. */
-    private static final int HAT_VERSION = 3;
+    private static final int HAT_VERSION = 4;
 
-    record Tier(int threshold, String color, int maxDura, double armor, double tough, int unbreaking,
+    record Tier(String name, int threshold, String color, int maxDura, double armor, double tough, int unbreaking,
                 boolean glint, double dupChance, Map<PotionEffectType, Integer> effects) {}
 
     /** A selectable particle style. Behaviour lives in renderStyle(); the unlock tier comes from config. */
@@ -131,8 +131,10 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
     private int maxJolly;
     private boolean ignoreCreative, giveFirstJoin, recipeDiscover, requireHat;
     private boolean keepJolly, destroyHat, hatOnRespawn;
-    private boolean tabEnabled, displayEnabled;
-    private String tabFormat;
+    private boolean tabEnabled, displayEnabled, chatPrefixOn;
+    private String tabFormat, chatPrefixFormat;
+    /** Tier index per online player, so the async chat thread never has to touch player data. */
+    private final Map<UUID, Integer> tierCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     private final Set<Material> dupExclude = EnumSet.noneOf(Material.class);
     private final Map<String, Integer> styleTier = new LinkedHashMap<>();
@@ -225,7 +227,9 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         hatOnRespawn = c.getBoolean("death.give-hat-on-respawn", false);
 
         tabEnabled = c.getBoolean("tablist.enabled", true);
-        tabFormat = c.getString("tablist.format", "<name> <tiercolor>[<jolly>]</tiercolor>");
+        tabFormat = c.getString("tablist.format", "<tiercolor>[<tier>]</tiercolor> <name>");
+        chatPrefixOn = c.getBoolean("chat-prefix.enabled", true);
+        chatPrefixFormat = c.getString("chat-prefix.format", "<tiercolor>[<tier>]</tiercolor> ");
         displayEnabled = c.getBoolean("hat-display.enabled", true);
 
         dupExclude.clear();
@@ -262,7 +266,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         tierPitch = (float) c.getDouble("sounds.tier-up.pitch", 1.0);
         tierSoundAll = c.getBoolean("sounds.tier-up.everyone", true);
         announceOn = c.getBoolean("announce.enabled", true);
-        announceMsg = c.getString("announce.message", "<gold><player> reached Jolly Tier <tier>!</gold>");
+        announceMsg = c.getString("announce.message", "<gold><player> reached the <tiercolor><tier></tiercolor> tier!</gold>");
 
         walkEnabled = c.getBoolean("gains.walking.enabled", true);
         walkBlocks = Math.max(0.0001, c.getDouble("gains.walking.blocks-per-point", 10));
@@ -304,7 +308,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         ConfigurationSection bp = c.getConfigurationSection("gains.mob-kills.boss-points");
         if (bp != null) for (String k : bp.getKeys(false)) {
             try { bossPoints.put(EntityType.valueOf(k.toUpperCase(Locale.ROOT)), bp.getInt(k)); }
-            catch (IllegalArgumentException ignored) { getLogger().warning("Unknown entity in mob-kills.boss-points: " + k); }
+            catch (IllegalArgumentException ex) { getLogger().warning("Unknown entity in mob-kills.boss-points: " + k); }
         }
 
         passiveOn = c.getBoolean("gains.passive.enabled", true);
@@ -386,7 +390,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
             }
 
             tiers.add(new Tier(
-                    s.getInt("threshold"), s.getString("color", "#FFFFFF"), s.getInt("max-durability", 55),
+                    k, s.getInt("threshold"), s.getString("color", "#FFFFFF"), s.getInt("max-durability", 55),
                     s.getDouble("armor", 1.0), s.getDouble("toughness", 0.0), s.getInt("unbreaking", 0),
                     s.getBoolean("glint", false),
                     Math.max(0, Math.min(1, s.getDouble("ore-duplicate-chance", 0))), fx));
@@ -425,6 +429,15 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         for (int i = 0; i < tiers.size(); i++) if (j >= tiers.get(i).threshold()) t = i;
         return t;
     }
+
+    /** Display name of tier index t (0-based), e.g. "Rudolph". */
+    private String tierName(int t) {
+        if (tiers.isEmpty()) return "Tier " + (t + 1);
+        return tiers.get(Math.max(0, Math.min(t, tiers.size() - 1))).name();
+    }
+
+    /** Display name for a 1-based tier number from the config (unlock tiers). */
+    private String tierNameNo(int n) { return tierName(n - 1); }
 
     private boolean isHat(ItemStack i) {
         return i != null && i.getType() == Material.LEATHER_HELMET && i.hasItemMeta()
@@ -469,7 +482,8 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         if (announceOn) {
             Bukkit.broadcast(MM.deserialize(announceMsg,
                     Placeholder.unparsed("player", p.getName()),
-                    Placeholder.unparsed("tier", String.valueOf(t + 1)),
+                    Placeholder.unparsed("tier", tierName(t)),
+                    Placeholder.unparsed("tiernumber", String.valueOf(t + 1)),
                     tierColor(t)));
         }
         if (tierSoundOn) {
@@ -511,12 +525,14 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
     }
 
     private void updateTab(Player p) {
-        if (!tabEnabled) { p.playerListName(null); return; }
         int t = tierIdx(get(p));
+        tierCache.put(p.getUniqueId(), t);
+        if (!tabEnabled) { p.playerListName(null); return; }
         p.playerListName(MM.deserialize(tabFormat,
                 Placeholder.unparsed("name", p.getName()),
                 Placeholder.unparsed("jolly", fmt(get(p))),
-                Placeholder.unparsed("tier", String.valueOf(t + 1)),
+                Placeholder.unparsed("tier", tierName(t)),
+                Placeholder.unparsed("tiernumber", String.valueOf(t + 1)),
                 tierColor(t)));
     }
 
@@ -537,14 +553,13 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         t = Math.max(0, Math.min(tiers.size() - 1, t));
         final Tier T = tiers.get(t);
         final int tierNo = t + 1;
-        final int total = tiers.size();
         final NamespacedKey model = new NamespacedKey("jolly", "santa_hat_" + tierNo);
         hat.editMeta(m -> {
             m.getPersistentDataContainer().set(HAT_TIER, PersistentDataType.INTEGER, tierNo - 1);
             m.getPersistentDataContainer().set(HAT_VER, PersistentDataType.INTEGER, HAT_VERSION);
             m.displayName(Component.text("Santa Hat", NamedTextColor.RED).decoration(TextDecoration.ITALIC, false));
             TextColor c = TextColor.fromHexString(T.color());
-            m.lore(List.of(Component.text("Jolliness tier " + tierNo + "/" + total, c == null ? NamedTextColor.GOLD : c)
+            m.lore(List.of(Component.text(T.name(), c == null ? NamedTextColor.GOLD : c)
                     .decoration(TextDecoration.ITALIC, false)));
 
             if (m instanceof Damageable d) {
@@ -809,7 +824,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
                 if (need <= 0) continue;
                 boolean open = myTier >= need, sel = st.id().equals(cur);
                 p.sendMessage(Component.text((sel ? "> " : open ? "+ " : "- ") + st.id() + "  (" + st.name() + ")"
-                                + (open ? "" : "  - unlocks at tier " + need),
+                                + (open ? "" : "  - unlocks at " + tierNameNo(need)),
                         sel ? NamedTextColor.GREEN : open ? NamedTextColor.WHITE : NamedTextColor.DARK_GRAY));
             }
             if (cur == null) p.sendMessage(Component.text("Currently off.", NamedTextColor.GRAY));
@@ -833,7 +848,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
             return;
         }
         if (myTier < need) {
-            p.sendMessage(Component.text(st.name() + " unlocks at tier " + need + ".", NamedTextColor.RED));
+            p.sendMessage(Component.text(st.name() + " unlocks at " + tierNameNo(need) + ".", NamedTextColor.RED));
             return;
         }
         pdc.set(PARTICLE, PersistentDataType.STRING, st.id());
@@ -844,7 +859,7 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
     private void jingleCommand(Player p, String[] a) {
         if (!jingleOn) { p.sendMessage(Component.text("Footstep jingle is disabled.", NamedTextColor.GRAY)); return; }
         if (tierIdx(get(p)) + 1 < jingleMinTier) {
-            p.sendMessage(Component.text("Footstep jingle unlocks at tier " + jingleMinTier + ".", NamedTextColor.RED));
+            p.sendMessage(Component.text("Footstep jingle unlocks at " + tierNameNo(jingleMinTier) + ".", NamedTextColor.RED));
             return;
         }
         boolean on;
@@ -986,6 +1001,17 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
     }
 
     @EventHandler public void onChat(AsyncChatEvent e) {
+        if (chatPrefixOn) {
+            // Same layout as vanilla chat (<name> message), with the tier in front of the name.
+            e.renderer((source, sourceDisplayName, message, viewer) -> {
+                int t = tierCache.getOrDefault(source.getUniqueId(), 0);
+                Component prefix = MM.deserialize(chatPrefixFormat,
+                        Placeholder.unparsed("tier", tierName(t)),
+                        Placeholder.unparsed("tiernumber", String.valueOf(t + 1)),
+                        tierColor(t));
+                return Component.translatable("chat.type.text", prefix.append(sourceDisplayName), message);
+            });
+        }
         if (!chatEnabled) return;
         String msg = PlainTextComponentSerializer.plainText().serialize(e.message()).toLowerCase(Locale.ROOT);
         if (chatPhrases.stream().noneMatch(msg::contains)) return;
@@ -1211,11 +1237,13 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
             p.getPersistentDataContainer().set(GIVEN, PersistentDataType.BYTE, (byte) 1);
             p.getInventory().addItem(newHat(tierIdx(get(p))));
         }
+        refreshAllHats(p);
         updateTab(p);
     }
 
     @EventHandler public void onQuit(PlayerQuitEvent e) {
         UUID id = e.getPlayer().getUniqueId();
+        tierCache.remove(id);
         walkDist.remove(id); walkPts.remove(id); lastMove.remove(id);
         lastGainSound.remove(id); playSecs.remove(id); jingleTick.remove(id); passiveSecs.remove(id); pumpkinUse.remove(id);
         String prefix = id.toString();
@@ -1228,8 +1256,8 @@ public final class JollyPlugin extends JavaPlugin implements Listener, TabExecut
         if (a.length == 0) {
             if (!(s instanceof Player p)) { s.sendMessage("Players only. Try /jolly get <player>."); return true; }
             int j = get(p), t = tierIdx(j);
-            String next = t + 1 < tiers.size() ? "next tier at " + fmt(tiers.get(t + 1).threshold()) : "max tier";
-            p.sendMessage(Component.text("Jolliness: " + fmt(j) + " (tier " + (t + 1) + ", " + next + ")", NamedTextColor.GOLD));
+            String next = t + 1 < tiers.size() ? "next: " + tierName(t + 1) + " at " + fmt(tiers.get(t + 1).threshold()) : "max tier";
+            p.sendMessage(Component.text("Jolliness: " + fmt(j) + " (" + tierName(t) + ", " + next + ")", NamedTextColor.GOLD));
             if (requireHat && !wearing(p)) p.sendMessage(Component.text("Wear your Santa Hat to earn more.", NamedTextColor.GRAY));
             return true;
         }
