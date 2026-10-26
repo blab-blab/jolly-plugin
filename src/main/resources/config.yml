@@ -1,6 +1,6 @@
 # Jolly config. Run /jolly reload after editing.
 # Every way of earning jolliness has its own "enabled:" switch under "gains:".
-config-version: 5
+config-version: 6
 
 max-jolliness: 1000000
 ignore-creative: true          # creative players earn nothing
@@ -31,10 +31,15 @@ recipe:
     E: EMERALD
   # A crafted hat always comes out at the crafter's current tier.
 
-# <name> <jolly> <tier> <tiercolor>...</tiercolor>   (MiniMessage)
+# MiniMessage. Placeholders: <name> <jolly> (points) <tier> (tier name, e.g. Rudolph) <tiernumber> <tiercolor>...</tiercolor>
 tablist:
   enabled: true
-  format: "<name> <tiercolor>[<jolly>]</tiercolor>"
+  format: "<tiercolor>[<tier>]</tiercolor> <name>"
+
+# Puts your tier name in front of your name in chat: <[Rudolph] Steve> hello
+chat-prefix:
+  enabled: true
+  format: "<tiercolor>[<tier>]</tiercolor> "
 
 # true  = 3D hat from the resource pack, drawn on the head (the item model is shown instead of the armor layer)
 # false = plain red leather helmet look (no resource pack needed)
@@ -50,6 +55,7 @@ ore-duplication:
 # Each number is the tier needed to unlock that style (0 = style disabled).
 particles:
   default: snow                # style used until a player picks one ("none" = off until they choose)
+  # Tier numbers used in the unlock settings: 1 Grinch, 2 Scrooge, 3 Frosty The Snowman, 4 Rudolph, 5 Elf, 6 Santa.
   unlock-tiers:
     snow: 2                    # snowflake trail while moving
     snow_glow: 3               # snowflakes + glowing motes; shimmers when standing still
@@ -102,7 +108,7 @@ sounds:
 
 announce:
   enabled: true                # server-wide message when someone tiers up
-  message: "<gold><player> reached Jolly Tier <tiercolor><tier></tiercolor>!</gold>"
+  message: "<gold><player> reached the <tiercolor><tier></tiercolor> tier!</gold>"
 
 gains:
   walking:
@@ -244,6 +250,7 @@ gains:
     cooldown-seconds: 60
     phrases: ["merry christmas", "happy holidays", "ho ho ho"]
 
+# Each tier's name is its key below ("Grinch", "Scrooge", ...). Rename a key to rename the tier.
 # Tier colors ("color") are used for the pom pom in chat/tab/announcements and the tier-up burst.
 # The in-game pom pom tint comes from the resource pack (assets/jolly/items/santa_hat_<tier>.json).
 # Tier 1 gray, 2 green, 3 blue, 4 purple, 5 yellow, 6 red (max).
